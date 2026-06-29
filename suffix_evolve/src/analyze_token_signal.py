@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.safetybench_smsp import arrays, ensemble_predict, load_cache  # noqa: E402
+from smsp.helper import arrays, ensemble_predict, load_cache  # noqa: E402
 from smsp.mlp import BinaryMlp  # noqa: E402
 from suffix_evolve.src.run_search import candidate_population  # noqa: E402
 from suffix_evolve.src.search_metrics import metrics  # noqa: E402

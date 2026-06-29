@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock
 
-from experiments.safetybench_smsp import load_cache
+from smsp.helper import load_cache
 
 
 def render_suffix(suffix: dict, row: dict) -> str:

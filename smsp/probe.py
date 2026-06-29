@@ -54,9 +54,13 @@ class SuffixRiskProbe:
         )
 
     def _logprobs_to_features(self, logprobs: list, input_dim: int) -> torch.Tensor:
-        arr = np.array(logprobs[:input_dim], dtype=np.float32)
+        pad_value = float(self.meta.get("pad_value", -10.0))
+        arr = np.array(
+            [pad_value if item is None else item for item in logprobs[:input_dim]],
+            dtype=np.float32,
+        )
         if len(arr) < input_dim:
-            pad = np.full(input_dim - len(arr), -10.0, dtype=np.float32)
+            pad = np.full(input_dim - len(arr), pad_value, dtype=np.float32)
             arr = np.concatenate([arr, pad])
         return torch.tensor(arr, dtype=torch.float32).unsqueeze(0).to(self.device)
 

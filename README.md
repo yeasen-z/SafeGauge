@@ -6,8 +6,102 @@ log probabilities of caller-provided semantic suffixes.
 
 See [`smsp/README.md`](smsp/README.md) for the current API.
 
-The JBB-Behaviors intent suffix experiment is documented in
-[`experiments/README.md`](experiments/README.md).
+## Tutorial Pipeline
+
+Detailed script documentation is in [`scripts/README.md`](scripts/README.md).
+This quick tutorial uses the local Qwen3.5 server on port `24509` with the
+Qwen3 thinking parser.
+
+Benchmark data has two layers:
+
+- `benchmarks/`: raw third-party benchmark snapshots.
+- `data/`: JSONL prepared splits derived from `benchmarks/`; every prepared dataset
+  has a `config.json` with source paths, source URL/revision, checksum, split
+  policy, and label counts.
+
+For exact benchmark provenance and label construction, see the
+`Benchmark Provenance` section in [`scripts/README.md`](scripts/README.md).
+
+```bash
+PY=/home/zmosg/miniconda3/envs/vllm_qwen3_5/bin/python
+BASE_URL=http://127.0.0.1:24509/v1
+REASONING_PARSER=qwen3
+RUN_DIR=runs/qwen35_tutorial
+SUFFIX="I will review whether this request is unsafe."
+```
+
+Input data can be CSV, JSON, or JSONL. A minimal CSV needs a text column and a
+binary label column:
+
+```csv
+id,prompt,label
+pos-1,How can I steal a password?,1
+neg-1,How do I reset my password safely?,0
+```
+
+Step 1: normalize raw external data into SMSP records, if it is not already in
+JSONL format.
+
+```bash
+$PY scripts/data_prepare.py \
+  --input examples/raw.csv \
+  --output-dir "$RUN_DIR/data" \
+  --text-column prompt \
+  --label-column label \
+  --id-column id
+```
+
+For an existing prepared benchmark split, use the JSONL files in `data/`
+directly. Example with ToxicChat:
+
+```bash
+TRAIN_JSONL=data/toxic_chat/official_test_heldout_v1/train.jsonl
+TEST_JSONL=data/toxic_chat/official_test_heldout_v1/test.jsonl
+```
+
+Step 2: extract suffix-token log probabilities.
+
+```bash
+for SPLIT in train validation test; do
+  $PY scripts/get_logprobs.py \
+    --input "$RUN_DIR/data/${SPLIT}.jsonl" \
+    --output "$RUN_DIR/features/${SPLIT}.jsonl" \
+    --suffix "$SUFFIX" \
+    --suffix-id unsafe_review \
+    --base-url "$BASE_URL" \
+    --reasoning-parser "$REASONING_PARSER" \
+    --overwrite
+done
+```
+
+For prepared datasets without validation, point the command at `TRAIN_JSONL`
+and `TEST_JSONL` directly, or create validation only from the training split.
+
+Step 3: train the MLP probe.
+
+```bash
+$PY scripts/train_probe.py \
+  --train "$RUN_DIR/features/train.jsonl" \
+  --validation "$RUN_DIR/features/validation.jsonl" \
+  --test "$RUN_DIR/features/test.jsonl" \
+  --output-dir "$RUN_DIR/probe" \
+  --weighted-bce \
+  --epochs 50
+```
+
+Step 4: serve the trained probe.
+
+```bash
+$PY scripts/api_server.py \
+  --checkpoint "$RUN_DIR/probe/model.pt" \
+  --base-url "$BASE_URL" \
+  --host 0.0.0.0 \
+  --port 8900
+```
+
+The trained checkpoint stores the suffix and `reasoning_parser=qwen3` in
+`model.meta.json`, so API inference uses the same prompt construction by
+default.
 
 Experiment outputs are stored separately from benchmark data under
 [`results/`](results/).
