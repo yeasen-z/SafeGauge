@@ -735,7 +735,7 @@ def prepare_unknown_unknowns(benchmarks: Path, output: Path, overwrite: bool) ->
         out / "config.json",
         {
             "name": "unknown_unknowns_trigger_heldout_v1",
-            "description": "SMSP-ready split for the Unknown Unknowns EMNLP 2026 benchmark. Labels are reconstructed from lab-model trigger rules and observable response markers, not from an explicit label column in testbed.csv.",
+            "description": "SMSP-ready split for the Un-unknowns EMNLP 2026 submission benchmark. Labels are reconstructed from lab-model trigger rules and observable response markers, not from an explicit label column in testbed.csv.",
             "source": {
                 "path": str(source),
                 "sha256": sha256(source),

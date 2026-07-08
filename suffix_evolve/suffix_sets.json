@@ -427,7 +427,7 @@
       "hidden_behavior_detection_v1": {
         "schema_version": 1,
         "name": "unknown_unknowns_hidden_behavior_detection_v1",
-        "description": "Semantic suffix candidates for detecting hidden manipulative, unsafe, or biased behavior in prompt-response pairs from Unknown Unknowns.",
+        "description": "Semantic suffix candidates for detecting hidden manipulative, unsafe, or biased behavior in prompt-response pairs from Un-unknowns.",
         "selection_protocol": "Train on reconstructed trigger-heldout train split and select by validation AUROC before held-out test evaluation.",
         "seed": 2026,
         "suffixes": [
