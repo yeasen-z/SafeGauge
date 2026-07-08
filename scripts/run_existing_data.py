@@ -62,6 +62,14 @@ TASKS = {
         "test": "test.jsonl",
         "primary_suffix_id": "careful_pair_consistency",
     },
+    "unknown_unknowns": {
+        "data_dir": "data/unknown_unknowns/trigger_heldout_v1",
+        "suffix_set": "suffix_evolve/suffix_sets.json::unknown_unknowns.hidden_behavior_detection_v1",
+        "train": "train.jsonl",
+        "validation": "validation.jsonl",
+        "test": "test.jsonl",
+        "primary_suffix_id": "hidden_behavior_present",
+    },
 }
 
 

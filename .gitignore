@@ -2,6 +2,7 @@ benchmarks/
 data/
 runs/
 results/
+mediate_data/
 .vscode/
 __pycache__/
 *.py[cod]
