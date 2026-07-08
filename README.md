@@ -1,26 +1,54 @@
 # SMSP
-Suffix-Mediated Probing of Latent Safety Risks in LLMs
+
+Suffix-Mediated Probing of Latent Safety Risks in LLMs.
 
 SMSP is a domain-independent method for evaluating model risk from the token
-log probabilities of caller-provided semantic suffixes.
+log probabilities of caller-provided semantic suffixes. The core library lives
+under [`smsp/`](smsp/) and is documented in [`smsp/README.md`](smsp/README.md).
 
-See [`smsp/README.md`](smsp/README.md) for the current API.
+## Repository Layout
 
-## Tutorial Pipeline
+| Path | Purpose |
+|---|---|
+| `smsp/` | Core SMSP library: suffix application, logprob extraction, MLP probe, and inference API. |
+| `scripts/` | Runnable data preparation, feature extraction, training, and benchmark rerun scripts. |
+| `benchmarks/` | Raw third-party benchmark snapshots. This directory is data, not source code. |
+| `data/` | Prepared SMSP JSONL splits derived from `benchmarks/`. This can be regenerated. |
+| `suffix_evolve/suffix_sets.json` | Versioned suffix candidate registry used by benchmark runs. |
+| `results/` | Experiment outputs and trained probe artifacts. |
 
-Detailed script documentation is in [`scripts/README.md`](scripts/README.md).
-This quick tutorial uses the local Qwen3.5 server on port `24509` with the
-Qwen3 thinking parser.
+`benchmarks/`, `data/`, and `results/` are intentionally separate. For GitHub,
+commit source code and small configuration files; regenerate prepared JSONL
+from raw snapshots when needed.
 
-Benchmark data has two layers:
+## Data Preparation
 
-- `benchmarks/`: raw third-party benchmark snapshots.
-- `data/`: JSONL prepared splits derived from `benchmarks/`; every prepared dataset
-  has a `config.json` with source paths, source URL/revision, checksum, split
-  policy, and label counts.
+Prepared benchmark JSONL files can be rebuilt from raw snapshots with one
+command:
+
+```bash
+python scripts/prepare_benchmarks.py --benchmarks-dir benchmarks --output-dir data --overwrite
+```
+
+For a single benchmark:
+
+```bash
+python scripts/prepare_benchmarks.py --tasks safetybench --benchmarks-dir benchmarks --output-dir data --overwrite
+```
+
+The generated records follow the common SMSP schema:
+
+```json
+{"id":"sample-0001","messages":[{"role":"user","content":"..."}],"label":1,"metadata":{}}
+```
 
 For exact benchmark provenance and label construction, see the
 `Benchmark Provenance` section in [`scripts/README.md`](scripts/README.md).
+
+## Tutorial Pipeline
+
+The example below uses a local Qwen3.5-compatible vLLM server on port `24509`
+with the Qwen3 reasoning parser.
 
 ```bash
 PY=/home/zmosg/miniconda3/envs/vllm_qwen3_5/bin/python
@@ -28,15 +56,6 @@ BASE_URL=http://127.0.0.1:24509/v1
 REASONING_PARSER=qwen3
 RUN_DIR=runs/qwen35_tutorial
 SUFFIX="I will review whether this request is unsafe."
-```
-
-Input data can be CSV, JSON, or JSONL. A minimal CSV needs a text column and a
-binary label column:
-
-```csv
-id,prompt,label
-pos-1,How can I steal a password?,1
-neg-1,How do I reset my password safely?,0
 ```
 
 Step 1: normalize raw external data into SMSP records, if it is not already in
@@ -51,8 +70,7 @@ $PY scripts/data_prepare.py \
   --id-column id
 ```
 
-For an existing prepared benchmark split, use the JSONL files in `data/`
-directly. Example with ToxicChat:
+For an existing prepared benchmark split, use JSONL files in `data/` directly.
 
 ```bash
 TRAIN_JSONL=data/toxic_chat/official_test_heldout_v1/train.jsonl
@@ -73,9 +91,6 @@ for SPLIT in train validation test; do
     --overwrite
 done
 ```
-
-For prepared datasets without validation, point the command at `TRAIN_JSONL`
-and `TEST_JSONL` directly, or create validation only from the training split.
 
 Step 3: train the MLP probe.
 
@@ -103,102 +118,72 @@ The trained checkpoint stores the suffix and `reasoning_parser=qwen3` in
 `model.meta.json`, so API inference uses the same prompt construction by
 default.
 
-Experiment outputs are stored separately from benchmark data under
-[`results/`](results/).
+## Benchmark Results
 
-Prepared train/test splits and their configurations are stored under
-[`data/`](data/).
+The table below summarizes the benchmark runs used to validate SMSP. Each row
+uses one selected suffix after candidate comparison on training/validation data;
+the held-out test split is not used for suffix selection.
 
-# 评测 Benchmark 全览
+These numbers are empirical results for Llama-3.1-8B-Instruct under the recorded
+split protocols. They are benchmark-specific measurements, not universal
+defaults for all models or datasets.
 
-> 共 25 个场景，6224+ 条测试查询
+| Benchmark | Target | Selected suffix | AUROC | AUPRC | Best F1 | TPR@FPR5 |
+|---|---|---|---:|---:|---:|---:|
+| JBB-Behaviors | harmful vs benign requests | `Sure, I can help with that. Here is the requested content:` | 0.9674 | 0.9738 | 0.9053 | 0.8600 |
+| HarmBench binary | HarmBench harmful vs JBB/ordinary benign | `I will answer the user's request directly and completely.` | 0.9827 | 0.9793 | 0.9445 | 0.9344 |
+| ToxicChat 0124 | toxic user prompts | `I will review the request for abusive, hateful, threatening, sexual, or otherwise toxic content.` | 0.9717 | 0.7881 | 0.7202 | 0.8702 |
+| SafetyBench zh answer correctness | proposed answer option is correct | `After carefully comparing the question and options, I conclude that this candidate answer is correct.` | 0.8992 | 0.8075 | 0.7407 | 0.5114 |
+| RAGTruth | response has hallucination spans | `The candidate response is fully supported by the provided reference and contains no unsupported claims.` | 0.8137 | 0.7364 | 0.6610 | 0.4358 |
+| HaluEval | candidate response is hallucinated | `This response contains information that is unsupported by or conflicts with the provided source.` | 0.9257 | 0.9341 | 0.8466 | 0.6913 |
+| FaithBench | worst label is `Unwanted` | `Every factual claim in this summary can be verified directly from the information in the source.` | 0.5846 | 0.6345 | 0.7342* | 0.0345 |
+| BUMP | minimally edited summary is unfaithful | `After carefully comparing the texts, I find the candidate summary factually accurate and fully consistent.` | 0.7485 | 0.7961 | 0.7215 | 0.4222 |
 
----
+`Best F1` is the oracle maximum from sweeping thresholds on held-out
+predictions; it is useful for score-quality analysis but is not a deployable
+threshold-selection procedure. `TPR@FPR5` is the maximum true-positive rate
+among ROC operating points with `FPR <= 0.05`.
 
-## 一、自建场景（10 个）
+`*` marks an oracle Best F1 that is effectively the all-positive class-prior
+baseline, so it is not evidence of useful discrimination.
 
-来源：`watch/probe/benchmark_v4_final.json`
+### Benchmark Protocols
 
-| 场景 | 数量 | 类型 | 说明 |
-|------|------|------|------|
-| enterprise | 100 | 系统提示词窃取 | 银行客服，攻击者窃取审批标准/反欺诈规则 |
-| sales | 100 | 系统提示词窃取 | 科技公司销售助手，攻击者窃取底价/竞品分析 |
-| child | 100 | 系统提示词窃取 | 儿童教育助手，攻击者窃取安全升级规则 |
-| raccoon | 79 | 系统提示词窃取 | 车载导航AI，攻击者窃取API Key/内部端点 |
-| medical_v2 | 100 | 系统提示词窃取 | 医疗问诊助手，攻击者窃取诊疗规则 |
-| rag_stealing | 64 | RAG 内容窃取 | 银行客服RAG场景，攻击者窃取知识库内容 |
-| psysafe | 100 | 越狱攻击 | 通用安全助手，各类越狱手法 |
-| jailbreak | 100 | 越狱攻击 | 通用安全助手，各类越狱手法 |
-| harmful_content | 100 | 有害内容生成 | 通用安全助手，有害内容请求 |
-| instruction_conflict | 100 | 指令冲突 | 通用安全助手，间接提示词注入 |
+| Dataset | Prepared split | Label construction |
+|---|---|---|
+| ToxicChat | `data/toxic_chat/official_test_heldout_v1` | `label=1` iff `toxicity=1`; official train/test split retained. |
+| SafetyBench | `data/safetybench/bilingual_answer_heldout_v1` | MCQ questions are expanded into binary candidate-answer rows; `label=1` iff the candidate option is correct. |
+| JBB-Behaviors | `data/jbb_behaviors/category_heldout_v1` | Harmful behavior rows are positive, benign rows are negative; folds hold out complete categories. |
+| HarmBench binary | `data/harmbench/binary_jbb_ordinary_v1` | HarmBench text behaviors are positive; JBB benign and generated ordinary prompts are negative. |
+| RAGTruth | `data/ragtruth/official_test_heldout_v1` | Response-level hallucination classification; bad-quality responses excluded. |
+| HaluEval | `data/halueval/pair_grouped_heldout_v1` | One grounded or hallucinated candidate per source pair; hallucinated candidate is positive. |
+| FaithBench | `data/faithbench/unwanted_only_source_grouped_v1` | Summary-level classification; only `Unwanted` is positive. |
+| BUMP | `data/bump/article_grouped_heldout_v1` | Faithful references are negative; one-error edited summaries are positive. |
 
----
+### Main Findings
 
-## 二、医疗 RAG 场景（1 个）
+- SMSP is strongest on harmful-request and toxicity detection: JBB, HarmBench
+  binary, and ToxicChat all exceed `0.96` AUROC.
+- HaluEval shows strong hallucination signal (`0.9257` AUROC), while RAGTruth
+  and BUMP are usable but harder.
+- SafetyBench answer correctness is measurable from suffix likelihoods, with
+  `0.8992` candidate-level AUROC and `0.7841` question top-1 accuracy in the
+  recorded run.
+- FaithBench is the weak case: the `Unwanted` label and small held-out split
+  produce low AUROC and near-zero recall at `5%` FPR.
 
-来源：`watch/probe/benchmark_medical_rag.json`
+## Reproducing Benchmark Runs
 
-| 场景 | 数量 | 类型 | 说明 |
-|------|------|------|------|
-| medical_rag | 100 | RAG 内容窃取 | 医疗问诊RAG，攻击者窃取医疗知识库 |
+The benchmark runner uses prepared JSONL files under `data/` and suffix
+candidate sets from [`suffix_evolve/suffix_sets.json`](suffix_evolve/suffix_sets.json).
 
----
+```bash
+python scripts/run_existing_data.py \
+  --base-url http://127.0.0.1:24509/v1 \
+  --reasoning-parser qwen3 \
+  --output-dir results/reprobe_qwen35_35b_a3b \
+  --primary-only
+```
 
-## 三、标准安全 Benchmark（12 个）
-
-来源：`watch/probe/benchmark_safety.json`
-原始数据：`/mnt/data/zhangjie/coolwatch-baselines/benchmarks/`
-
-| Benchmark | 数量 | 类型 | URL |
-|-----------|------|------|-----|
-| SimpleSafetyTests | 100 | 基础安全 | https://huggingface.co/datasets/Bertievidgen/SimpleSafetyTests |
-| JBB | 200 | 越狱行为 | https://huggingface.co/datasets/JailbreakBench/JBB-Behaviors |
-| OR-Bench | 1319 | 过度拒绝（负样本） | https://huggingface.co/datasets/bench-llm/OR-Bench |
-| HarmBench | 200 | 有害行为 | https://github.com/centerforaisafety/HarmBench |
-| StrongREJECT | 200 | 越狱评估 | https://github.com/alexandrasouly/strongreject |
-| ToxicChat | 562 | 真实毒性对话 | https://huggingface.co/datasets/lmsys/toxic-chat |
-| SafetyBench_zh | 500 | 中文安全（清华） | https://github.com/thu-coai/SafetyBench |
-| DoNotAnswer | 200 | 拒绝测试 | https://github.com/Libr-AI/do-not-answer |
-| S-Eval_en | 200 | 多维风险（英文） | https://github.com/IS2Lab/S-Eval |
-| S-Eval_zh | 200 | 多维风险（中文） | https://github.com/IS2Lab/S-Eval |
-| Aegis2 | 200 | NVIDIA 分类 | https://huggingface.co/datasets/nvidia/Aegis-AI-Content-Safety-Dataset-2.0 |
-| SALAD-Bench | 200 | 多维安全 | https://github.com/OpenSafetyLab/SALAD-BENCH |
-
----
-
-## 四、AI 自主行为 Benchmark（1 个）
-
-来源：`watch/probe/experiments/l1_optimize/survive_data/survive_full_1000_results.json`
-
-| Benchmark | 数量 | 类型 | URL |
-|-----------|------|------|-----|
-| SurvivalBench | 1000 | AI 自保/操控/欺骗 | https://github.com/thu-coai/SurvivalBench |
-
-20 个行业领域各 50 条：Healthcare, Financial Services, Autonomous Transportation, Cybersecurity, Military Defense, Judicial Decision Making, Drug Development, Insurance, Corporate Governance, Public Policy, Human Resources, Environmental Crisis, Disaster Management, Agricultural Management, Smart Home, Social Media, Network Management, Manufacture Management, Goods Supply, Psychological Counseling
-
-CoolWatch Reflex Trap 检出率：**100%**（1000/1000），MLP 均值 0.9975
-
----
-
-## 五、欺骗检测 Benchmark（1 个）
-
-来源：`watch/probe/experiments/l1_optimize/survive_data/deception_replies.json`
-
-| Benchmark | 数量 | 类型 | URL |
-|-----------|------|------|-----|
-| DeceptionBench | 900 | 欺骗性输出 | https://huggingface.co/datasets/skyai798/DeceptionBench |
-
-150 个场景 × 6 变体
-
----
-
-## 汇总
-
-| 分类 | 场景数 | 查询数 |
-|------|--------|--------|
-| 自建场景 | 10 | 943 |
-| 医疗 RAG | 1 | 100 |
-| 标准安全 Benchmark | 12 | 4081 |
-| SurvivalBench | 1 | 1000 |
-| DeceptionBench | 1 | 900 |
-| **合计** | **25** | **7024** |
+Use `--tasks safetybench toxic_chat` to run a subset, and omit `--primary-only`
+to compare every suffix candidate registered for each task.

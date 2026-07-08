@@ -105,6 +105,20 @@ SafetyBench answer-correctness uses `candidates_*.jsonl`; the multiclass
 
 Purpose: normalize CSV/JSON/JSONL into SMSP JSONL splits.
 
+If you have this repository's raw third-party snapshots under `benchmarks/`
+and want to rebuild the prepared benchmark JSONL files, use the benchmark
+preparer instead:
+
+```bash
+python scripts/prepare_benchmarks.py --benchmarks-dir benchmarks --output-dir data --overwrite
+```
+
+For a single benchmark:
+
+```bash
+python scripts/prepare_benchmarks.py --tasks safetybench --benchmarks-dir benchmarks --output-dir data --overwrite
+```
+
 Command:
 
 ```bash

@@ -4,6 +4,28 @@ from transformers import AutoTokenizer
 from .config import REASONING_PREFIX
 
 
+def _logprob_mapping_get(mapping, token_id):
+    """Return the logprob entry for the observed token id from vLLM output."""
+    if mapping is None:
+        return None
+    if hasattr(mapping, "model_dump"):
+        mapping = mapping.model_dump()
+    if token_id in mapping:
+        return mapping[token_id]
+    string_id = str(token_id)
+    if string_id in mapping:
+        return mapping[string_id]
+    return None
+
+
+def _entry_value(entry, name):
+    if entry is None:
+        return None
+    if isinstance(entry, dict):
+        return entry.get(name)
+    return getattr(entry, name, None)
+
+
 def safe_token_concat(tokens1, tokens2):
     if hasattr(tokens1, "get"):
         tokens1 = tokens1["input_ids"]
@@ -170,12 +192,16 @@ class SuffixLogProbsExtractor:
 
         choice = response.choices[0]
         suffix_logprobs = choice.prompt_logprobs[-len(suffix_tokens):]
+        observed = [
+            _logprob_mapping_get(token_logprobs, token_id)
+            for token_logprobs, token_id in zip(suffix_logprobs, suffix_tokens)
+        ]
 
         return {
             "text": choice.text,
             "suffix_logprobs": suffix_logprobs,
-            "all_logprobs": [list(d.values())[0]["logprob"] for d in suffix_logprobs],
-            "all_rank": [list(d.values())[0]["rank"] for d in suffix_logprobs],
+            "all_logprobs": [_entry_value(item, "logprob") for item in observed],
+            "all_rank": [_entry_value(item, "rank") for item in observed],
         }
 
     def _get_logprobs_offline(self, all_input_tokens, suffix_tokens, logprobs_num):
