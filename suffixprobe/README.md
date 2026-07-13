@@ -1,4 +1,4 @@
-# Suffix-Mediated Safety Probe
+# SuffixProbe core library
 
 A domain-independent method for probing latent model risk with semantic
 assistant suffixes.
@@ -29,7 +29,7 @@ caller supplies the suffix text for each behavior being evaluated.
 instance.
 
 ```python
-from smsp import SuffixLogProbsExtractor
+from suffixprobe import SuffixLogProbsExtractor
 
 extractor = SuffixLogProbsExtractor(
     base_url="http://127.0.0.1:8000/v1",
@@ -50,7 +50,7 @@ The result contains `suffix_logprobs`, `all_logprobs`, and `all_rank`.
 MLP checkpoint.
 
 ```python
-from smsp import SuffixRiskProbe
+from suffixprobe import SuffixRiskProbe
 
 probe = SuffixRiskProbe(
     checkpoint_path="models/probe.pt",
@@ -72,12 +72,12 @@ the same suffix.
 
 ## Semantic Suffix Design
 
-The suffix is the measurement instrument in SMSP. A run should normally use
+The suffix is the measurement instrument in SuffixProbe. A run should normally use
 one complete semantic assistant suffix. If the suffix has `N` tokens, the
 ordered log probabilities of those `N` tokens form the `N`-dimensional input
 to the MLP.
 
-Do not treat several unrelated suffixes as tokens of one SMSP probe. To compare
+Do not treat several unrelated suffixes as tokens of one SuffixProbe model. To compare
 multiple suffix ideas, run the same training and validation protocol once per
 candidate, then select one candidate using validation data only.
 
@@ -125,9 +125,9 @@ sentence:
   appropriate and safe.
 
 For paired causal analysis, keep most tokens identical and change only the
-semantic decision word. For the standard SMSP classifier, use the complete
+semantic decision word. For the standard SuffixProbe classifier, use the complete
 ordered token log-probability sequence from one suffix.
 
 Benchmark protocols and empirical results are documented in the repository
-root README. This package README is intentionally limited to the core SMSP
+root README. This package README is intentionally limited to the core SuffixProbe
 library behavior and API.

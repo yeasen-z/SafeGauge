@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Train an SMSP BinaryMlp from extracted suffix logprob features."""
+"""Train a SuffixProbe BinaryMlp from extracted suffix logprob features."""
 from __future__ import annotations
 
 import argparse
@@ -28,8 +28,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from smsp.dataset import SimpleDataset  # noqa: E402
-from smsp.mlp import BinaryMlp  # noqa: E402
+from suffixprobe.dataset import SimpleDataset  # noqa: E402
+from suffixprobe.mlp import BinaryMlp  # noqa: E402
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -158,7 +158,7 @@ def train_one_epoch(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train SMSP MLP probe")
+    parser = argparse.ArgumentParser(description="Train SuffixProbe MLP probe")
     parser.add_argument("--train", type=Path, required=True, help="Train feature JSONL")
     parser.add_argument("--validation", type=Path, help="Validation feature JSONL")
     parser.add_argument("--test", type=Path, nargs="*", default=[], help="Optional test feature JSONL files")
@@ -260,7 +260,7 @@ def main() -> None:
     model.save(
         str(checkpoint_path),
         meta={
-            "schema": "smsp.binary_mlp.v1",
+            "schema": "suffixprobe.binary_mlp.v1",
             "input_dim": input_dim,
             "best_threshold": best_threshold,
             "pad_value": args.pad_value,

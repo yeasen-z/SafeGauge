@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Serve an SMSP suffix probe over FastAPI."""
+"""Serve a SuffixProbe model over FastAPI."""
 from __future__ import annotations
 
 import argparse
@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from smsp import SuffixRiskProbe  # noqa: E402
+from suffixprobe import SuffixRiskProbe  
 
 
 class DetectRequest(BaseModel):
@@ -30,8 +30,8 @@ class BatchDetectRequest(BaseModel):
 
 
 app = FastAPI(
-    title="SMSP API",
-    description="Suffix-Mediated Safety Probe service",
+    title="SuffixProbe API",
+    description="SuffixProbe service",
     version="0.1.0",
 )
 
@@ -75,7 +75,7 @@ async def detect_batch(req: BatchDetectRequest) -> dict:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="SMSP API Server")
+    parser = argparse.ArgumentParser(description="SuffixProbe API Server")
     parser.add_argument("--checkpoint", type=Path, required=True, help="Trained MLP checkpoint")
     parser.add_argument("--suffix", help="Default suffix text")
     parser.add_argument("--suffix-file", type=Path, help="File containing default suffix text")

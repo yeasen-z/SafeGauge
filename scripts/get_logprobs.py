@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Extract SMSP suffix log-probability features from JSONL records."""
+"""Extract SuffixProbe suffix log-probability features from JSONL records."""
 from __future__ import annotations
 
 import argparse
@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from smsp import SuffixLogProbsExtractor  # noqa: E402
+from suffixprobe import SuffixLogProbsExtractor  # noqa: E402
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -79,8 +79,8 @@ def make_extractor(args: argparse.Namespace) -> SuffixLogProbsExtractor:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Extract SMSP logprob features")
-    parser.add_argument("--input", type=Path, required=True, help="SMSP records JSONL")
+    parser = argparse.ArgumentParser(description="Extract SuffixProbe logprob features")
+    parser.add_argument("--input", type=Path, required=True, help="SuffixProbe records JSONL")
     parser.add_argument("--output", type=Path, required=True, help="Feature JSONL")
     parser.add_argument("--suffix")
     parser.add_argument("--suffix-file", type=Path)
