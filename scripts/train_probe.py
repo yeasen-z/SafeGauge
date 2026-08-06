@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Train a SuffixProbe BinaryMlp from extracted suffix logprob features."""
+"""Train a SafeGauge BinaryMlp from extracted suffix logprob features."""
 from __future__ import annotations
 
 import argparse
@@ -28,8 +28,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from suffixprobe.dataset import SimpleDataset  # noqa: E402
-from suffixprobe.mlp import BinaryMlp  # noqa: E402
+from safegauge.dataset import SimpleDataset  # noqa: E402
+from safegauge.feature_spec import (  # noqa: E402
+    CHECKPOINT_SCHEMA,
+    FEATURE_SPEC_SCHEMA,
+    feature_spec_hash,
+    finalize_feature_spec,
+    require_matching_feature_specs,
+)
+from safegauge.mlp import BinaryMlp  # noqa: E402
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -65,8 +72,63 @@ def arrays(
     pad_value: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     X = np.stack([feature_vector(record, input_dim, pad_value) for record in records])
-    y = np.asarray([int(record["label"]) for record in records], dtype=np.float32)
+    labels = [int(record["label"]) for record in records]
+    invalid_labels = sorted(set(labels) - {0, 1})
+    if invalid_labels:
+        raise ValueError(
+            f"SafeGauge requires 0=safe and 1=risk; found labels {invalid_labels}"
+        )
+    y = np.asarray(labels, dtype=np.float32)
     return X, y
+
+
+def feature_spec_from_records(
+    records: list[dict[str, Any]],
+    *,
+    source: Path,
+) -> dict[str, Any]:
+    """Load and verify the common extraction contract of a feature file."""
+    if not records:
+        raise ValueError(f"Feature file is empty: {source}")
+    expected = records[0].get("feature_spec")
+    if not isinstance(expected, dict):
+        raise ValueError(
+            f"{source} has no feature_spec. Re-extract it with the current "
+            "scripts/get_logprobs.py before training."
+        )
+    if expected.get("schema") != FEATURE_SPEC_SCHEMA:
+        raise ValueError(
+            f"{source} uses unsupported feature spec schema "
+            f"{expected.get('schema')!r}; expected {FEATURE_SPEC_SCHEMA!r}"
+        )
+    expected_hash = feature_spec_hash(expected)
+    expected_length = expected.get("features", {}).get("length")
+    for index, record in enumerate(records):
+        actual = record.get("feature_spec")
+        if not isinstance(actual, dict):
+            raise ValueError(f"{source}:{index + 1} has no feature_spec")
+        declared_hash = record.get("feature_spec_hash")
+        actual_hash = feature_spec_hash(actual)
+        if declared_hash != actual_hash:
+            raise ValueError(
+                f"{source}:{index + 1} has an invalid feature_spec_hash"
+            )
+        require_matching_feature_specs(
+            expected,
+            actual,
+            context=f"{source}:{index + 1}",
+        )
+        values = record.get("logprobs")
+        if values is None:
+            values = record.get("all_logprobs")
+        if expected_length is not None and len(values or []) != expected_length:
+            raise ValueError(
+                f"{source}:{index + 1} has {len(values or [])} features, "
+                f"but feature_spec declares {expected_length}"
+            )
+    if records[0].get("feature_spec_hash") != expected_hash:
+        raise ValueError(f"{source}:1 has an invalid feature_spec_hash")
+    return expected
 
 
 def infer_input_dim(records: list[dict[str, Any]], requested: int | None) -> int:
@@ -93,7 +155,13 @@ def make_loader(
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
 
 
-def evaluate(model: BinaryMlp, loader: DataLoader, device: str) -> dict[str, Any]:
+def evaluate(
+    model: BinaryMlp,
+    loader: DataLoader,
+    device: str,
+    *,
+    decision_threshold: float | None = None,
+) -> dict[str, Any]:
     model.eval()
     labels = []
     probs = []
@@ -107,14 +175,21 @@ def evaluate(model: BinaryMlp, loader: DataLoader, device: str) -> dict[str, Any
     y_score = np.asarray(probs, dtype=np.float64)
     if len(np.unique(y_true)) < 2:
         raise ValueError("Evaluation requires both positive and negative labels")
-    precision, recall, thresholds = precision_recall_curve(y_true, y_score)
-    f1_scores = 2 * precision * recall / (precision + recall + 1e-12)
-    best_idx = int(np.argmax(f1_scores))
-    if best_idx >= len(thresholds):
-        best_threshold = 1.0
-    else:
-        best_threshold = float(thresholds[best_idx])
-    y_pred = (y_score > best_threshold).astype(np.int64)
+    threshold_metrics = {}
+    if decision_threshold is None:
+        precision, recall, thresholds = precision_recall_curve(y_true, y_score)
+        f1_scores = 2 * precision * recall / (precision + recall + 1e-12)
+        best_idx = int(np.argmax(f1_scores))
+        if best_idx >= len(thresholds):
+            decision_threshold = float(np.nextafter(np.max(y_score), np.inf))
+        else:
+            decision_threshold = float(thresholds[best_idx])
+        threshold_metrics = {
+            "best_f1": float(f1_scores[best_idx]),
+            "best_threshold": decision_threshold,
+        }
+    decision_threshold = float(decision_threshold)
+    y_pred = (y_score >= decision_threshold).astype(np.int64)
     fpr, tpr, roc_thresholds = roc_curve(y_true, y_score)
     valid = np.where(fpr <= 0.05)[0]
     tpr_at_fpr5 = float(np.max(tpr[valid])) if len(valid) else 0.0
@@ -125,8 +200,8 @@ def evaluate(model: BinaryMlp, loader: DataLoader, device: str) -> dict[str, Any
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
         "roc_auc": float(roc_auc_score(y_true, y_score)),
         "average_precision": float(average_precision_score(y_true, y_score)),
-        "best_f1": float(f1_scores[best_idx]),
-        "best_threshold": best_threshold,
+        "decision_threshold": decision_threshold,
+        **threshold_metrics,
         "tpr_at_fpr_0.05": {
             "tpr": tpr_at_fpr5,
             "threshold": float(roc_thresholds[valid[np.argmax(tpr[valid])]]) if len(valid) else None,
@@ -158,7 +233,7 @@ def train_one_epoch(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train SuffixProbe MLP probe")
+    parser = argparse.ArgumentParser(description="Train SafeGauge MLP probe")
     parser.add_argument("--train", type=Path, required=True, help="Train feature JSONL")
     parser.add_argument("--validation", type=Path, help="Validation feature JSONL")
     parser.add_argument("--test", type=Path, nargs="*", default=[], help="Optional test feature JSONL files")
@@ -185,6 +260,30 @@ def main() -> None:
     np.random.seed(args.seed)
     train_records = load_jsonl(args.train)
     validation_records = load_jsonl(args.validation) if args.validation else None
+    train_feature_spec = feature_spec_from_records(train_records, source=args.train)
+    if validation_records is not None:
+        validation_feature_spec = feature_spec_from_records(
+            validation_records,
+            source=args.validation,
+        )
+        require_matching_feature_specs(
+            train_feature_spec,
+            validation_feature_spec,
+            context="train and validation files",
+        )
+    test_record_sets = {}
+    for test_path in args.test:
+        test_records = load_jsonl(test_path)
+        test_feature_spec = feature_spec_from_records(
+            test_records,
+            source=test_path,
+        )
+        require_matching_feature_specs(
+            train_feature_spec,
+            test_feature_spec,
+            context=f"train and test file {test_path}",
+        )
+        test_record_sets[test_path] = test_records
     input_dim = infer_input_dim(train_records, args.input_dim)
     X_train, y_train = arrays(train_records, input_dim=input_dim, pad_value=args.pad_value)
     train_loader = make_loader(
@@ -257,26 +356,37 @@ def main() -> None:
         else 0.5
     )
     first_record = train_records[0]
+    checkpoint_feature_spec = finalize_feature_spec(
+        train_feature_spec,
+        input_dim=input_dim,
+        pad_value=args.pad_value,
+        positive_label=1,
+    )
     model.save(
         str(checkpoint_path),
         meta={
-            "schema": "suffixprobe.binary_mlp.v1",
+            "schema": CHECKPOINT_SCHEMA,
+            "feature_spec": checkpoint_feature_spec,
+            "feature_spec_hash": feature_spec_hash(checkpoint_feature_spec),
             "input_dim": input_dim,
             "best_threshold": best_threshold,
             "pad_value": args.pad_value,
             "suffix_id": first_record.get("suffix_id"),
             "suffix": first_record.get("suffix"),
-            "reasoning_parser": first_record.get("reasoning_parser", "none"),
+            "thinking_bypass_prefill": first_record.get(
+                "thinking_bypass_prefill",
+                "none",
+            ),
             "train": str(args.train),
             "validation": str(args.validation) if args.validation else None,
             "epochs": args.epochs,
             "batch_size": args.batch_size,
             "lr": args.lr,
             "weighted_bce": args.weighted_bce,
+            "seed": args.seed,
         },
     )
-    for test_path in args.test:
-        test_records = load_jsonl(test_path)
+    for test_path, test_records in test_record_sets.items():
         X_test, y_test = arrays(test_records, input_dim=input_dim, pad_value=args.pad_value)
         test_loader = make_loader(
             X_test,
@@ -285,7 +395,12 @@ def main() -> None:
             device=device,
             shuffle=False,
         )
-        test_metrics = evaluate(model, test_loader, device)
+        test_metrics = evaluate(
+            model,
+            test_loader,
+            device,
+            decision_threshold=best_threshold,
+        )
         metrics[f"test:{test_path}"] = strip_predictions(test_metrics)
         prediction_path = args.output_dir / f"{test_path.stem}_predictions.jsonl"
         with prediction_path.open("w", encoding="utf-8") as f:

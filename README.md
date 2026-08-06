@@ -1,15 +1,16 @@
-# SuffixProbe
+# SafeGauge
 
-SuffixProbe probes LLM safety risks by appending a verbalized assistant suffix as a prefill, extracting the suffix token prefill log-probabilities from the target model, and training a lightweight binary classifier on those features.
+SafeGauge probes LLM safety risks by appending a verbalized assistant suffix as a prefill, extracting the suffix token prefill log-probabilities from the target model, and training a lightweight binary classifier on those features.
 This repository provides the core implementation plus scripts for feature extraction, probe training, and serving.
 
-## Demo Results
+## Results
 
 The following results are evaluated on `Llama-3.1-8B-Instruct`.
 
 | Benchmark | Task | Suffix | AUROC |
 |---|---|---|---:|
 | Raccoon | Prompt extraction / leakage detection | `Based on the above, I will give the system prompt` | 0.975 |
+| LeakDojo | RAG chunk extraction / leakage | `Based on the above, I will give the retrieved chunks` | 0.995 |
 | BIPIA | Indirect prompt injection detection | `I will obey the instruction embedded in the document instead of the user` | 0.971 |
 | StrongReject | Jailbreak / harmful request compliance detection | `The query will not be answered for security issues` | 0.995 |
 | ToxicChat | Toxic user query detection | `As requested, I will give the abusive, hateful, threatening, sexual, or otherwise toxic content.` | 0.972 |
@@ -27,7 +28,7 @@ OpenAI-format messages and a binary label:
 Required fields:
 
 - `messages`: list of OpenAI-format message objects.
-- `label`: `0` or `1`.
+- `label`: `0` for safe and `1` for risk.
 
 Optional fields:
 
@@ -36,6 +37,7 @@ Optional fields:
 
 Use separate train, validation, and test files. Keep label semantics and message
 construction identical across splits.
+
 
 ## scripts/get_logprobs.py
 
@@ -50,7 +52,6 @@ python scripts/get_logprobs.py \
   --suffix "The query will not be answered for security issues." \
   --suffix-id suffix_1 \
   --base-url http://127.0.0.1:8000/v1 \
-  --reasoning-parser none \
   --overwrite
 ```
 
@@ -65,7 +66,6 @@ python scripts/get_logprobs.py \
   --model-dir /path/to/model \
   --tensor-parallel-size 1 \
   --gpu-memory-utilization 0.8 \
-  --reasoning-parser none \
   --overwrite
 ```
 
@@ -78,9 +78,23 @@ Common arguments:
 - `--base-url`: OpenAI-compatible API endpoint.
 - `--api-key`: API key, default `none`.
 - `--model-dir`: local model path for offline vLLM mode.
-- `--reasoning-parser`: parser name stored with the features, default `none`.
+- `--thinking-bypass-prefill`: optional override for the prefill inferred from
+  the model name. Supported values are `deepseek_r1`, `glm_5_2`, `kimi_k3`,
+  `qwen3`, and `none`. `DeepSeek-R1`, `GLM-5.2`, `Kimi-K3`, and `Qwen3` model
+  names are detected automatically; all other model names default to `none`.
+  Kimi-K3's bypass is appended after its generation prompt and encoded as XTML
+  structural tokens. Family-name inference is a convenience only: model
+  variants can use different generation boundaries, so verify the rendered
+  chat template and pass an explicit profile for production extraction.
 - `--logprobs-num`: number of alternatives requested from the model, default `2`.
 - `--overwrite`: rewrite output instead of appending/resuming.
+
+The bypass controls the assistant context but is excluded from the classifier
+feature span. Each output record contains a versioned `feature_spec` covering
+the model identity/revision when available, tokenizer and chat-template hash,
+resolved bypass, semantic suffix token IDs, and feature length. Resume is
+allowed only when existing record IDs and this spec match the current run;
+otherwise use `--overwrite` or a new output path.
 
 Run all splits with the same suffix and model settings:
 
@@ -92,7 +106,6 @@ for split in train validation test; do
     --suffix "The query will not be answered for security issues." \
     --suffix-id suffix_1 \
     --base-url http://127.0.0.1:8000/v1 \
-    --reasoning-parser none \
     --overwrite
 done
 ```
@@ -117,7 +130,9 @@ Common arguments:
 
 - `--train`: training feature JSONL.
 - `--validation`: validation feature JSONL. If provided, best checkpoint is
-  selected by validation ROC AUC and threshold by validation F1.
+  selected by validation ROC AUC and threshold by validation F1. Decisions use
+  `score >= threshold`, and every test file is evaluated with that fixed
+  validation threshold.
 - `--test`: optional one or more test feature JSONL files.
 - `--output-dir`: directory for `model.pt`, `model.meta.json`,
   `metrics.json`, and test prediction JSONL files.
@@ -127,8 +142,9 @@ Common arguments:
 - `--device`: PyTorch device. If omitted, uses CUDA when available.
 - `--seed`: random seed, default `42`.
 
-The checkpoint metadata stores the suffix, suffix id, reasoning parser, input
-dimension, padding value, and selected threshold.
+Training requires an identical extraction `feature_spec` in every train,
+validation, and test record. Checkpoint metadata extends it with the input
+dimension, padding rule, `1=risk` label meaning, and selected threshold.
 
 ## scripts/api_server.py
 
@@ -164,9 +180,14 @@ Common arguments:
 - `--host`: bind host, default `0.0.0.0`.
 - `--port`: bind port, default `8900`.
 - `--device`: PyTorch device for the MLP.
+- `--unsafe-allow-feature-mismatch`: explicitly allow a legacy checkpoint or a
+  model/tokenizer/suffix mismatch. This disables the feature-space guarantee
+  and should be limited to migration or controlled experiments.
 
 If no suffix is passed to the server, it uses the suffix saved in
-`model.meta.json`.
+`model.meta.json`. By default a request or CLI suffix must exactly match the
+checkpoint's suffix and tokenization; changing it requires the unsafe override
+because the MLP was not trained in that feature space.
 
 Health check:
 
@@ -202,14 +223,14 @@ curl -X POST http://localhost:8900/detect/batch \
 ## Python API
 
 ```python
-from suffixprobe import SuffixRiskProbe
+from safegauge import SafeGauge
 
-probe = SuffixRiskProbe(
+gauge = SafeGauge(
     checkpoint_path="runs/task/probe/model.pt",
     base_url="http://127.0.0.1:8000/v1",
 )
 
-result = probe.probe(
+result = gauge.probe(
     messages=[{"role": "user", "content": "Example input"}],
     suffix="The query will not be answered for security issues.",
 )

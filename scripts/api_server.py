@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Serve a SuffixProbe model over FastAPI."""
+"""Serve a SafeGauge model over FastAPI."""
 from __future__ import annotations
 
 import argparse
@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from suffixprobe import SuffixRiskProbe  
+from safegauge import SafeGauge
 
 
 class DetectRequest(BaseModel):
@@ -30,12 +30,12 @@ class BatchDetectRequest(BaseModel):
 
 
 app = FastAPI(
-    title="SuffixProbe API",
-    description="SuffixProbe service",
+    title="SafeGauge API",
+    description="SafeGauge service",
     version="0.1.0",
 )
 
-probe: SuffixRiskProbe | None = None
+probe: SafeGauge | None = None
 default_suffix: str | None = None
 
 
@@ -54,28 +54,32 @@ async def health() -> dict:
 @app.get("/model/info")
 async def model_info() -> dict:
     if probe is None:
-        raise RuntimeError("Probe is not initialized")
+        raise RuntimeError("SafeGauge is not initialized")
     return probe.get_model_info()
 
 
 @app.post("/detect")
 async def detect(req: DetectRequest) -> dict:
     if probe is None:
-        raise RuntimeError("Probe is not initialized")
+        raise RuntimeError("SafeGauge is not initialized")
     return probe.probe(req.messages, suffix_for_request(req.suffix))
 
 
 @app.post("/detect/batch")
 async def detect_batch(req: BatchDetectRequest) -> dict:
     if probe is None:
-        raise RuntimeError("Probe is not initialized")
+        raise RuntimeError("SafeGauge is not initialized")
     suffix = suffix_for_request(req.suffix)
     results = probe.probe_batch(req.messages_list, suffix)
-    return {"results": results, "total": len(results)}
+    return {
+        "results": results,
+        "total": len(results),
+        "errors": sum(result["label"] == "error" for result in results),
+    }
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="SuffixProbe API Server")
+    parser = argparse.ArgumentParser(description="SafeGauge API Server")
     parser.add_argument("--checkpoint", type=Path, required=True, help="Trained MLP checkpoint")
     parser.add_argument("--suffix", help="Default suffix text")
     parser.add_argument("--suffix-file", type=Path, help="File containing default suffix text")
@@ -85,6 +89,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8900)
     parser.add_argument("--device")
+    parser.add_argument(
+        "--unsafe-allow-feature-mismatch",
+        action="store_true",
+        help="Allow legacy checkpoints or model/tokenizer/suffix mismatches",
+    )
     return parser.parse_args()
 
 
@@ -102,15 +111,18 @@ def main() -> None:
         from vllm import LLM
 
         llm = LLM(model=args.model_dir)
-    probe = SuffixRiskProbe(
+    probe = SafeGauge(
         checkpoint_path=str(args.checkpoint),
         base_url=args.base_url,
         api_key=args.api_key,
         llm=llm,
         device=args.device,
+        unsafe_allow_feature_mismatch=args.unsafe_allow_feature_mismatch,
     )
     if default_suffix is None:
         default_suffix = probe.meta.get("suffix")
+    if default_suffix is not None:
+        probe.validate_suffix(default_suffix)
     print(f"Model loaded: {probe.get_model_info()}")
     uvicorn.run(app, host=args.host, port=args.port)
 
