@@ -14,7 +14,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from safegauge import LogProbsExtractor  # noqa: E402
-from safegauge.feature_spec import feature_spec_hash  # noqa: E402
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -34,7 +33,10 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
 def validate_resume(
     existing: list[dict[str, Any]],
     inputs: list[dict[str, Any]],
-    expected_feature_spec_hash: str,
+    *,
+    suffix_id: str,
+    suffix: str,
+    thinking_bypass_prefill: str,
 ) -> None:
     """Ensure an append is a continuation of the same ordered extraction run."""
     if len(existing) > len(inputs):
@@ -63,11 +65,15 @@ def validate_resume(
                 f"Resume input mismatch at record {index} ({expected_id!r}); "
                 "messages or label changed. Pass --overwrite."
             )
-        actual_hash = output_record.get("feature_spec_hash")
-        if actual_hash != expected_feature_spec_hash:
+        if (
+            output_record.get("suffix_id") != suffix_id
+            or output_record.get("suffix") != suffix
+            or output_record.get("thinking_bypass_prefill")
+            != thinking_bypass_prefill
+        ):
             raise ValueError(
-                f"Resume feature spec mismatch at record {index}. "
-                "The model, tokenizer, bypass, or suffix changed; pass --overwrite."
+                f"Resume extraction settings mismatch at record {index}. "
+                "The suffix or thinking bypass changed; pass --overwrite."
             )
 
 
@@ -137,12 +143,16 @@ def main() -> None:
     records = load_jsonl(args.input)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     extractor = make_extractor(args)
-    extraction_spec = extractor.feature_spec(suffix, args.suffix_id)
-    extraction_spec_hash = feature_spec_hash(extraction_spec)
     existing = []
     if not args.overwrite and args.output.exists():
         existing = load_jsonl(args.output)
-        validate_resume(existing, records, extraction_spec_hash)
+        validate_resume(
+            existing,
+            records,
+            suffix_id=args.suffix_id,
+            suffix=suffix,
+            thinking_bypass_prefill=extractor.thinking_bypass_prefill,
+        )
     done = len(existing)
     mode = "w" if args.overwrite else "a"
     print(f"records={len(records)} done={done} output={args.output}", flush=True)
@@ -168,8 +178,9 @@ def main() -> None:
                 "suffix_id": args.suffix_id,
                 "suffix": suffix,
                 "thinking_bypass_prefill": extractor.thinking_bypass_prefill,
-                "feature_spec": extraction_spec,
-                "feature_spec_hash": extraction_spec_hash,
+                "suffix_start": result["suffix_start"],
+                "suffix_end": result["suffix_end"],
+                "suffix_token_ids": result["suffix_token_ids"],
                 "suffix_logprobs": result["suffix_logprobs"],
                 "logprobs": result["all_logprobs"],
                 "rank": result["all_rank"],

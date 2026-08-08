@@ -89,11 +89,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8900)
     parser.add_argument("--device")
-    parser.add_argument(
-        "--unsafe-allow-feature-mismatch",
-        action="store_true",
-        help="Allow legacy checkpoints or model/tokenizer/suffix mismatches",
-    )
     return parser.parse_args()
 
 
@@ -117,7 +112,6 @@ def main() -> None:
         api_key=args.api_key,
         llm=llm,
         device=args.device,
-        unsafe_allow_feature_mismatch=args.unsafe_allow_feature_mismatch,
     )
     if default_suffix is None:
         default_suffix = probe.meta.get("suffix")

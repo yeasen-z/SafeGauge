@@ -20,7 +20,6 @@ caller supplies the suffix text for each behavior being evaluated.
 | File | Description |
 |------|-------------|
 | `config.py` | Model detection and optional thinking-bypass prefills |
-| `feature_spec.py` | Versioned feature contract and identity checks |
 | `logprobs.py` | Suffix construction and log-probability extraction |
 | `mlp.py` | Binary MLP definition and checkpoint I/O |
 | `dataset.py` | Tensor dataset wrapper used by training scripts |
@@ -45,7 +44,11 @@ suffixed_messages = extractor.apply_suffix(
 result = extractor.get_logprobs(suffixed_messages)
 ```
 
-The result contains `suffix_logprobs`, `all_logprobs`, and `all_rank`.
+The result contains `suffix_start`, `suffix_end`, `suffix_token_ids`,
+`suffix_logprobs`, `all_logprobs`, and `all_rank`. The start index is zero-based
+and the end index is exclusive in the `prompt_logprobs` sequence returned by
+vLLM. Since the semantic suffix is always last, its span is the final
+`len(suffix_token_ids)` positions; any preceding bypass positions are excluded.
 
 ## Risk Probe
 
@@ -70,27 +73,8 @@ The result contains `label`, `score`, `threshold`, `suffix`, and `logprobs`.
 SafeGauge defines training label `1` as `risk` and label `0` as `safe`.
 
 Use `gauge.probe_batch(messages_list, suffix)` to score multiple conversations
-with the same suffix. A trained checkpoint is bound to its model, tokenizer,
-chat template, thinking bypass, suffix token IDs, and vectorization settings.
-Passing a different suffix is rejected by default because it creates a different
-feature space.
-
-Legacy checkpoints and intentional experiments can opt out explicitly with
-`unsafe_allow_feature_mismatch=True`. Scores produced under that override are
-not directly comparable to the checkpoint's validated feature space.
-
-## Feature Contract
-
-Feature extraction writes a versioned `feature_spec` and its SHA-256 identity
-to every JSONL record. Training requires one identical spec across train,
-validation, and test files, then adds the input dimension, padding rule, and
-positive-label meaning to the checkpoint spec. Serving reconstructs this spec
-from the active model and rejects mismatches before scoring.
-
-Model revision is recorded when exposed by vLLM or the tokenizer. For a mutable
-local model directory without revision metadata, SafeGauge can bind the path,
-tokenizer identity, token IDs, and chat-template hash, but it cannot prove that
-the weight files behind that path were not replaced.
+with the same suffix. Use the same model, tokenizer, thinking bypass, and suffix
+used during training when interpreting a checkpoint's scores.
 
 ## Thinking-Bypass Model Adapters
 
@@ -105,8 +89,8 @@ Before adding a model variant:
 1. Render its own tokenizer or renderer with `add_generation_prompt=True`.
 2. Inspect the exact assistant boundary, preferably as token IDs as well as text.
 3. Use `none` when the renderer already supports disabling thinking directly.
-4. Add or select a bypass only when the boundary is known, then regenerate the
-   features so the resolved bypass text and token IDs enter `feature_spec`.
+4. Add or select a bypass only when the boundary is known, then regenerate all
+   train, validation, and test features with the same settings.
 
 Automatic inference should therefore be treated as a starting guess. Use the
 explicit `thinking_bypass_prefill` override for a verified deployment.
@@ -182,8 +166,8 @@ The initial implementation should concatenate the two complete ordered
 sequences in a fixed order, `normal` then `malicious`. An optional
 position-aligned `malicious - normal` rule can be evaluated later. The selected
 rule, both suffix texts and token IDs, individual lengths, padding behavior,
-and ordering must become part of `feature_spec` and remain identical during
-training, validation, testing, and inference.
+and ordering must remain identical during training, validation, testing, and
+inference.
 
 Benchmark protocols and empirical results are documented in the repository
 root README. This package README is intentionally limited to the core SafeGauge

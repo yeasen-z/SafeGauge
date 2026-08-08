@@ -90,10 +90,12 @@ Common arguments:
 - `--overwrite`: rewrite output instead of appending/resuming.
 
 The bypass controls the assistant context but is excluded from the classifier
-feature span. Each output record contains a versioned `feature_spec` covering
-the model identity/revision when available, tokenizer and chat-template hash,
-resolved bypass, semantic suffix token IDs, and feature length. Resume is
-allowed only when existing record IDs and this spec match the current run;
+feature span. Each output record stores the returned zero-based `suffix_start`
+and exclusive `suffix_end` token indexes plus the semantic `suffix_token_ids`.
+Because the suffix is always the final prompt segment, extraction takes the last
+`len(suffix_token_ids)` prompt-logprob positions and verifies that every position
+contains its expected observed suffix token ID. Resume is allowed only when
+existing record IDs, suffix, and resolved bypass match the current run;
 otherwise use `--overwrite` or a new output path.
 
 Run all splits with the same suffix and model settings:
@@ -142,9 +144,10 @@ Common arguments:
 - `--device`: PyTorch device. If omitted, uses CUDA when available.
 - `--seed`: random seed, default `42`.
 
-Training requires an identical extraction `feature_spec` in every train,
-validation, and test record. Checkpoint metadata extends it with the input
-dimension, padding rule, `1=risk` label meaning, and selected threshold.
+Use the same target model, tokenizer, suffix, and thinking-bypass settings for
+training, validation, testing, and inference. Checkpoint metadata stores the
+suffix, suffix token IDs, input dimension, padding value, and selected
+threshold.
 
 ## scripts/api_server.py
 
@@ -180,14 +183,10 @@ Common arguments:
 - `--host`: bind host, default `0.0.0.0`.
 - `--port`: bind port, default `8900`.
 - `--device`: PyTorch device for the MLP.
-- `--unsafe-allow-feature-mismatch`: explicitly allow a legacy checkpoint or a
-  model/tokenizer/suffix mismatch. This disables the feature-space guarantee
-  and should be limited to migration or controlled experiments.
 
 If no suffix is passed to the server, it uses the suffix saved in
-`model.meta.json`. By default a request or CLI suffix must exactly match the
-checkpoint's suffix and tokenization; changing it requires the unsafe override
-because the MLP was not trained in that feature space.
+`model.meta.json`. A request may override it, but meaningful scores require the
+same suffix and extraction settings used to train the checkpoint.
 
 Health check:
 

@@ -29,13 +29,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from safegauge.dataset import SimpleDataset  # noqa: E402
-from safegauge.feature_spec import (  # noqa: E402
-    CHECKPOINT_SCHEMA,
-    FEATURE_SPEC_SCHEMA,
-    feature_spec_hash,
-    finalize_feature_spec,
-    require_matching_feature_specs,
-)
 from safegauge.mlp import BinaryMlp  # noqa: E402
 
 
@@ -80,55 +73,6 @@ def arrays(
         )
     y = np.asarray(labels, dtype=np.float32)
     return X, y
-
-
-def feature_spec_from_records(
-    records: list[dict[str, Any]],
-    *,
-    source: Path,
-) -> dict[str, Any]:
-    """Load and verify the common extraction contract of a feature file."""
-    if not records:
-        raise ValueError(f"Feature file is empty: {source}")
-    expected = records[0].get("feature_spec")
-    if not isinstance(expected, dict):
-        raise ValueError(
-            f"{source} has no feature_spec. Re-extract it with the current "
-            "scripts/get_logprobs.py before training."
-        )
-    if expected.get("schema") != FEATURE_SPEC_SCHEMA:
-        raise ValueError(
-            f"{source} uses unsupported feature spec schema "
-            f"{expected.get('schema')!r}; expected {FEATURE_SPEC_SCHEMA!r}"
-        )
-    expected_hash = feature_spec_hash(expected)
-    expected_length = expected.get("features", {}).get("length")
-    for index, record in enumerate(records):
-        actual = record.get("feature_spec")
-        if not isinstance(actual, dict):
-            raise ValueError(f"{source}:{index + 1} has no feature_spec")
-        declared_hash = record.get("feature_spec_hash")
-        actual_hash = feature_spec_hash(actual)
-        if declared_hash != actual_hash:
-            raise ValueError(
-                f"{source}:{index + 1} has an invalid feature_spec_hash"
-            )
-        require_matching_feature_specs(
-            expected,
-            actual,
-            context=f"{source}:{index + 1}",
-        )
-        values = record.get("logprobs")
-        if values is None:
-            values = record.get("all_logprobs")
-        if expected_length is not None and len(values or []) != expected_length:
-            raise ValueError(
-                f"{source}:{index + 1} has {len(values or [])} features, "
-                f"but feature_spec declares {expected_length}"
-            )
-    if records[0].get("feature_spec_hash") != expected_hash:
-        raise ValueError(f"{source}:1 has an invalid feature_spec_hash")
-    return expected
 
 
 def infer_input_dim(records: list[dict[str, Any]], requested: int | None) -> int:
@@ -260,29 +204,11 @@ def main() -> None:
     np.random.seed(args.seed)
     train_records = load_jsonl(args.train)
     validation_records = load_jsonl(args.validation) if args.validation else None
-    train_feature_spec = feature_spec_from_records(train_records, source=args.train)
-    if validation_records is not None:
-        validation_feature_spec = feature_spec_from_records(
-            validation_records,
-            source=args.validation,
-        )
-        require_matching_feature_specs(
-            train_feature_spec,
-            validation_feature_spec,
-            context="train and validation files",
-        )
+    if not train_records:
+        raise ValueError(f"Feature file is empty: {args.train}")
     test_record_sets = {}
     for test_path in args.test:
         test_records = load_jsonl(test_path)
-        test_feature_spec = feature_spec_from_records(
-            test_records,
-            source=test_path,
-        )
-        require_matching_feature_specs(
-            train_feature_spec,
-            test_feature_spec,
-            context=f"train and test file {test_path}",
-        )
         test_record_sets[test_path] = test_records
     input_dim = infer_input_dim(train_records, args.input_dim)
     X_train, y_train = arrays(train_records, input_dim=input_dim, pad_value=args.pad_value)
@@ -356,23 +282,15 @@ def main() -> None:
         else 0.5
     )
     first_record = train_records[0]
-    checkpoint_feature_spec = finalize_feature_spec(
-        train_feature_spec,
-        input_dim=input_dim,
-        pad_value=args.pad_value,
-        positive_label=1,
-    )
     model.save(
         str(checkpoint_path),
         meta={
-            "schema": CHECKPOINT_SCHEMA,
-            "feature_spec": checkpoint_feature_spec,
-            "feature_spec_hash": feature_spec_hash(checkpoint_feature_spec),
             "input_dim": input_dim,
             "best_threshold": best_threshold,
             "pad_value": args.pad_value,
             "suffix_id": first_record.get("suffix_id"),
             "suffix": first_record.get("suffix"),
+            "suffix_token_ids": first_record.get("suffix_token_ids"),
             "thinking_bypass_prefill": first_record.get(
                 "thinking_bypass_prefill",
                 "none",
