@@ -21,14 +21,15 @@ caller supplies the suffix text for each behavior being evaluated.
 |------|-------------|
 | `config.py` | Model detection and optional thinking-bypass prefills |
 | `logprobs.py` | Suffix construction and log-probability extraction |
+| `server_backends.py` | vLLM and SGLang server request adapters |
 | `mlp.py` | Binary MLP definition and checkpoint I/O |
 | `dataset.py` | Tensor dataset wrapper used by training scripts |
 | `probe.py` | End-to-end suffix risk scoring |
 
 ## Log-Probability Extraction
 
-`LogProbsExtractor` supports a vLLM server or an offline `vllm.LLM`
-instance.
+`LogProbsExtractor` supports a vLLM server, an SGLang server, or an offline
+`vllm.LLM` instance. Server selection is explicit and defaults to vLLM.
 
 ```python
 from safegauge import LogProbsExtractor
@@ -44,11 +45,35 @@ suffixed_messages = extractor.apply_suffix(
 result = extractor.get_logprobs(suffixed_messages)
 ```
 
+For SGLang, use its server root rather than an OpenAI `/v1` endpoint:
+
+```python
+extractor = LogProbsExtractor(
+    base_url="http://127.0.0.1:30000",
+    server_backend="sglang",
+    tokenizer_path="/path/to/model-or-tokenizer",
+)
+```
+
+The adapter targets the native prompt-logprob contract present in SGLang
+`0.4.7` and current releases, and validates its response shape at runtime.
+
+`tokenizer_path` is optional when server discovery returns a path or model ID
+accessible to the SafeGauge process. Pass it explicitly for a remote server
+whose local filesystem path is not shared with the client. SafeGauge loads
+tokenizers with `trust_remote_code=True`, so use only trusted server and
+tokenizer sources.
+
 The result contains `suffix_start`, `suffix_end`, `suffix_token_ids`,
 `suffix_logprobs`, `all_logprobs`, and `all_rank`. The start index is zero-based
-and the end index is exclusive in the `prompt_logprobs` sequence returned by
-vLLM. Since the semantic suffix is always last, its span is the final
-`len(suffix_token_ids)` positions; any preceding bypass positions are excluded.
+and the end index is exclusive in the complete prompt token sequence. Since the
+semantic suffix is always last, its span is known before extraction and every
+backend response is checked against the expected suffix token IDs. Any bypass
+or backend-required lookback position is excluded.
+
+For SGLang, `all_rank` is known only when the observed token appears in the
+requested top-k list; otherwise it is `None`. SafeGauge classifier features use
+`all_logprobs`, not rank.
 
 ## Risk Probe
 

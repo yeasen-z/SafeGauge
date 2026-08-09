@@ -18,6 +18,8 @@ class SafeGauge:
         api_key: str = "none",
         llm=None,
         device: str = None,
+        server_backend: str = "vllm",
+        tokenizer_path: str = None,
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -40,11 +42,14 @@ class SafeGauge:
                 thinking_bypass_prefill=thinking_bypass_prefill,
                 base_url=base_url,
                 api_key=api_key,
+                server_backend=server_backend,
+                tokenizer_path=tokenizer_path,
             )
         elif llm is not None:
             self.logprobs_extractor = LogProbsExtractor(
                 thinking_bypass_prefill=thinking_bypass_prefill,
                 llm=llm,
+                tokenizer_path=tokenizer_path,
             )
         else:
             raise ValueError("Must provide either base_url (server mode) or llm (offline mode)")
@@ -113,5 +118,7 @@ class SafeGauge:
                 self.logprobs_extractor.thinking_bypass_prefill
             ),
             "mode": self.logprobs_extractor.mode,
+            "server_backend": self.logprobs_extractor.server_backend,
+            "server_version": self.logprobs_extractor.server_version,
             "metadata": self.meta,
         }

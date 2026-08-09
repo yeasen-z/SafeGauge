@@ -83,8 +83,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=Path, required=True, help="Trained MLP checkpoint")
     parser.add_argument("--suffix", help="Default suffix text")
     parser.add_argument("--suffix-file", type=Path, help="File containing default suffix text")
-    parser.add_argument("--base-url", help="OpenAI-compatible vLLM URL")
+    parser.add_argument("--base-url", help="vLLM /v1 URL or SGLang server root URL")
+    parser.add_argument(
+        "--server-backend",
+        choices=("vllm", "sglang"),
+        default="vllm",
+        help="Server implementation used by --base-url (default: vllm)",
+    )
     parser.add_argument("--api-key", default="none")
+    parser.add_argument(
+        "--tokenizer-path",
+        help="Local tokenizer path or model ID overriding server discovery",
+    )
     parser.add_argument("--model-dir", help="Local model path for offline vLLM")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8900)
@@ -112,6 +122,8 @@ def main() -> None:
         api_key=args.api_key,
         llm=llm,
         device=args.device,
+        server_backend=args.server_backend,
+        tokenizer_path=args.tokenizer_path,
     )
     if default_suffix is None:
         default_suffix = probe.meta.get("suffix")

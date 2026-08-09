@@ -55,6 +55,26 @@ python scripts/get_logprobs.py \
   --overwrite
 ```
 
+SGLang native server API:
+
+```bash
+python scripts/get_logprobs.py \
+  --input data/train.jsonl \
+  --output runs/task/features/train.jsonl \
+  --suffix "The query will not be answered for security issues." \
+  --suffix-id suffix_1 \
+  --server-backend sglang \
+  --base-url http://127.0.0.1:30000 \
+  --tokenizer-path /path/to/model-or-tokenizer \
+  --overwrite
+```
+
+The SGLang adapter targets the native prompt-logprob contract present in
+SGLang `0.4.7` and current releases. It checks the lookback row, response
+length, and suffix token IDs at runtime instead of selecting a parser from the
+reported version string. Validate it against the exact server build used in
+production.
+
 Offline vLLM model:
 
 ```bash
@@ -75,8 +95,15 @@ Common arguments:
 - `--output`: feature JSONL to write.
 - `--suffix` or `--suffix-file`: assistant suffix used for probing.
 - `--suffix-id`: name stored in each output record.
-- `--base-url`: OpenAI-compatible API endpoint.
+- `--base-url`: vLLM OpenAI-compatible `/v1` endpoint or SGLang server root.
+- `--server-backend`: `vllm` (default) or `sglang`. Selection is explicit
+  because both servers may expose OpenAI-compatible model endpoints.
 - `--api-key`: API key, default `none`.
+- `--tokenizer-path`: optional local tokenizer path or model ID. Server mode
+  discovers it automatically when possible; pass this option when the path
+  reported by a remote server is not accessible on the SafeGauge host. Only
+  use trusted server and tokenizer sources because custom tokenizer code is
+  enabled.
 - `--model-dir`: local model path for offline vLLM mode.
 - `--thinking-bypass-prefill`: optional override for the prefill inferred from
   the model name. Supported values are `deepseek_r1`, `glm_5_2`, `kimi_k3`,
@@ -90,13 +117,18 @@ Common arguments:
 - `--overwrite`: rewrite output instead of appending/resuming.
 
 The bypass controls the assistant context but is excluded from the classifier
-feature span. Each output record stores the returned zero-based `suffix_start`
-and exclusive `suffix_end` token indexes plus the semantic `suffix_token_ids`.
-Because the suffix is always the final prompt segment, extraction takes the last
-`len(suffix_token_ids)` prompt-logprob positions and verifies that every position
-contains its expected observed suffix token ID. Resume is allowed only when
-existing record IDs, suffix, and resolved bypass match the current run;
-otherwise use `--overwrite` or a new output path.
+feature span. Each output record stores zero-based `suffix_start` and exclusive
+`suffix_end` indexes in the complete prompt token sequence, plus the semantic
+`suffix_token_ids`. Because the suffix is always the final prompt segment,
+extraction knows its span before making a server request and verifies every
+returned observed token ID. The adapter requests SGLang logprobs from one
+preceding token position because the first row of its returned input-logprob
+slice is a `None` placeholder; that lookback row is discarded and is never a
+classifier feature. Output records also store `server_backend` and
+`server_version`.
+Resume is allowed only when existing record IDs, suffix, resolved bypass, and
+backend information match the current run; otherwise use `--overwrite` or a
+new output path.
 
 Run all splits with the same suffix and model settings:
 
@@ -145,8 +177,10 @@ Common arguments:
 - `--seed`: random seed, default `42`.
 
 Use the same target model, tokenizer, suffix, and thinking-bypass settings for
-training, validation, testing, and inference. Checkpoint metadata stores the
-suffix, suffix token IDs, input dimension, padding value, and selected
+training, validation, testing, and inference. Use the same inference backend
+and tested server version as well, because numerically close log probabilities
+are not guaranteed to be identical across engines. Checkpoint metadata stores
+the suffix, suffix token IDs, input dimension, padding value, and selected
 threshold.
 
 ## scripts/api_server.py
@@ -159,6 +193,18 @@ With an OpenAI-compatible vLLM server:
 python scripts/api_server.py \
   --checkpoint runs/task/probe/model.pt \
   --base-url http://127.0.0.1:8000/v1 \
+  --host 0.0.0.0 \
+  --port 8900
+```
+
+With an SGLang server:
+
+```bash
+python scripts/api_server.py \
+  --checkpoint runs/task/probe/model.pt \
+  --server-backend sglang \
+  --base-url http://127.0.0.1:30000 \
+  --tokenizer-path /path/to/model-or-tokenizer \
   --host 0.0.0.0 \
   --port 8900
 ```
@@ -177,8 +223,10 @@ Common arguments:
 
 - `--checkpoint`: trained `model.pt`.
 - `--suffix` or `--suffix-file`: optional default suffix override.
-- `--base-url`: OpenAI-compatible API endpoint.
+- `--base-url`: vLLM `/v1` endpoint or SGLang server root.
+- `--server-backend`: `vllm` (default) or `sglang`.
 - `--api-key`: API key, default `none`.
+- `--tokenizer-path`: optional tokenizer override for server discovery.
 - `--model-dir`: local model path for offline vLLM mode.
 - `--host`: bind host, default `0.0.0.0`.
 - `--port`: bind port, default `8900`.
@@ -217,6 +265,15 @@ curl -X POST http://localhost:8900/detect/batch \
       [{"role": "user", "content": "Second input"}]
     ]
   }'
+```
+
+## Tests
+
+The backend contract tests use hand-written token IDs and mock server responses;
+they do not require a model, GPU, or labeled dataset:
+
+```bash
+python -m unittest discover -s tests -v
 ```
 
 ## Python API

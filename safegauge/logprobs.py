@@ -4,10 +4,11 @@ from typing import Dict, Optional
 from transformers import AutoTokenizer
 
 from .config import THINKING_BYPASS_PREFILL, infer_thinking_bypass_prefill
+from .server_backends import create_server_backend
 
 
 def _logprob_mapping_get(mapping, token_id):
-    """Return the logprob entry for the observed token id from vLLM output."""
+    """Return the logprob entry for an observed token ID."""
     if mapping is None:
         return None
     if hasattr(mapping, "model_dump"):
@@ -44,36 +45,26 @@ def _serializable_logprob_mapping(mapping):
     }
 
 
-def _suffix_span(prompt_logprobs, suffix_token_ids) -> tuple[int, int]:
-    """Return the trailing semantic-suffix span in prompt-logprob positions."""
-    suffix_token_ids = list(suffix_token_ids)
-    if not suffix_token_ids:
-        raise ValueError("assistant semantic suffix must contain at least one token")
-    if len(prompt_logprobs) < len(suffix_token_ids):
-        raise ValueError(
-            "prompt_logprobs is shorter than the semantic suffix: "
-            f"{len(prompt_logprobs)} < {len(suffix_token_ids)}"
-        )
-    end = len(prompt_logprobs)
-    return end - len(suffix_token_ids), end
-
-
 def _extract_suffix_result(
     *,
     text: str,
-    prompt_logprobs,
+    suffix_logprobs,
     suffix_token_ids,
+    suffix_start: int,
 ) -> Dict:
-    """Select the trailing semantic suffix from returned prompt logprobs."""
-    if prompt_logprobs is None:
-        raise ValueError("vLLM did not return prompt_logprobs")
-
-    prompt_logprobs = list(prompt_logprobs)
-    suffix_start, suffix_end = _suffix_span(
-        prompt_logprobs,
-        suffix_token_ids,
-    )
-    suffix_logprobs = prompt_logprobs[suffix_start:suffix_end]
+    """Build a backend-independent result for the semantic suffix."""
+    suffix_token_ids = list(suffix_token_ids)
+    if not suffix_token_ids:
+        raise ValueError("assistant semantic suffix must contain at least one token")
+    if suffix_logprobs is None:
+        raise ValueError("backend did not return suffix logprobs")
+    suffix_logprobs = list(suffix_logprobs)
+    if len(suffix_logprobs) != len(suffix_token_ids):
+        raise ValueError(
+            "suffix logprob length does not match suffix token length: "
+            f"{len(suffix_logprobs)} != {len(suffix_token_ids)}"
+        )
+    suffix_end = suffix_start + len(suffix_token_ids)
     observed = [
         _logprob_mapping_get(token_logprobs, token_id)
         for token_logprobs, token_id in zip(suffix_logprobs, suffix_token_ids)
@@ -82,16 +73,21 @@ def _extract_suffix_result(
         zip(suffix_logprobs, observed, suffix_token_ids),
         start=suffix_start,
     ):
-        if mapping is not None and entry is None:
+        if mapping is None:
             raise ValueError(
-                f"prompt_logprobs[{index}] does not contain observed suffix "
+                f"missing suffix logprobs at prompt position {index}"
+            )
+        if entry is None:
+            raise ValueError(
+                f"suffix logprobs at prompt position {index} do not contain "
+                "the observed suffix "
                 f"token ID {token_id}"
             )
     return {
         "text": text,
         "suffix_start": suffix_start,
         "suffix_end": suffix_end,
-        "suffix_token_ids": list(suffix_token_ids),
+        "suffix_token_ids": suffix_token_ids,
         "suffix_logprobs": [
             _serializable_logprob_mapping(item) for item in suffix_logprobs
         ],
@@ -130,34 +126,66 @@ class LogProbsExtractor:
         top_p: float = 0.95,
         # offline mode args
         llm=None,
+        # backend selection and tokenizer override
+        server_backend: str = "vllm",
+        tokenizer_path: Optional[str] = None,
     ):
         """
-        Server mode: only base_url is required. model name, tokenizer, and
-            logprobs permission are auto-detected from the server.
+        Server mode: pass base_url and select vLLM or SGLang with
+            server_backend. Model information is auto-detected from the server.
         Offline mode: only llm is required. tokenizer is auto-loaded from the LLM.
         """
         self.model = None       # server API model id (may be alias)
         self.model_root = None  # actual model path on disk
+        self.server_backend = None
+        self.server_version = None
         if base_url is not None:
             self.mode = "server"
             self.base_url = base_url
             self.api_key = api_key
             self.temperature = temperature
             self.top_p = top_p
-            self._auto_detect_server_info()
-            print(f"[LogProbsExtractor] Server mode: {self.base_url} | model: {self.model}")
+            self._backend = create_server_backend(
+                server_backend,
+                self.base_url,
+                self.api_key,
+            )
+            self.server_backend = self._backend.name
+            server_info = self._backend.discover()
+            self.model = server_info.model
+            self.model_root = server_info.model_root
+            self.server_version = server_info.version
+            detected_tokenizer_path = server_info.tokenizer_path
+            version_text = (
+                f" | version: {self.server_version}"
+                if self.server_version
+                else ""
+            )
+            print(
+                "[LogProbsExtractor] Server mode: "
+                f"{self.base_url} | backend: {self.server_backend} "
+                f"| model: {self.model}{version_text}"
+            )
         elif llm is not None:
             self.mode = "offline"
             self.llm = llm
             model_config = self.llm.llm_engine.model_config
             self.model_root = model_config.model
+            detected_tokenizer_path = self.model_root
             print(f"[LogProbsExtractor] Offline mode | model: {self.model_root}")
         else:
             raise ValueError("Must provide either base_url (server mode) or llm (Offline mode)")
 
         if thinking_bypass_prefill is None:
             model_identity = " ".join(
-                value for value in (self.model_root, self.model) if value
+                value
+                for value in (
+                    self.model_root,
+                    self.model,
+                    tokenizer_path,
+                    detected_tokenizer_path,
+                )
+                if value
             )
             self.thinking_bypass_prefill = infer_thinking_bypass_prefill(
                 model_identity,
@@ -171,39 +199,25 @@ class LogProbsExtractor:
                 f"'{thinking_bypass_prefill}'. Supported values: {supported}"
             )
 
-        # auto-load tokenizer
-        if self.model_root:
-            print(f"[LogProbsExtractor] Auto-loading tokenizer from: {self.model_root}")
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_root, trust_remote_code=True)
-        else:
-            raise ValueError("Cannot auto-load tokenizer: no model_root available.")
-
-    def _auto_detect_server_info(self):
-        """Query vLLM server to get model name, path, and check logprobs permission."""
-        from openai import OpenAI
-        try:
-            client = OpenAI(api_key=self.api_key, base_url=self.base_url)
-            models = client.models.list()
-            if not models.data:
-                return
-
-            server_model = models.data[0]
-            self.model = server_model.id
-            self.model_root = getattr(server_model, "root", None)
-
-            # check logprobs permission
-            permissions = getattr(server_model, "permission", [])
-            if permissions:
-                perm = permissions[0] if isinstance(permissions[0], dict) else permissions[0].__dict__
-                allow_logprobs = perm.get("allow_logprobs", None)
-                if allow_logprobs is False:
-                    raise PermissionError(f"Server model '{self.model}' does not allow logprobs")
-
-            print(f"[LogProbsExtractor] Auto-detected model: {self.model} | root: {self.model_root}")
-        except PermissionError:
-            raise
-        except Exception as e:
-            print(f"[LogProbsExtractor] Could not query server for model info: {e}")
+        self.tokenizer_path = (
+            tokenizer_path
+            or detected_tokenizer_path
+            or self.model_root
+            or self.model
+        )
+        if not self.tokenizer_path:
+            raise ValueError(
+                "Cannot auto-load tokenizer from server model information; "
+                "pass tokenizer_path explicitly"
+            )
+        print(
+            "[LogProbsExtractor] Auto-loading tokenizer from: "
+            f"{self.tokenizer_path}"
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.tokenizer_path,
+            trust_remote_code=True,
+        )
 
     def _encode_assistant_text(self, text: str) -> list[int]:
         """Encode an assistant prefill fragment without adding wrapper tokens."""
@@ -284,18 +298,23 @@ class LogProbsExtractor:
 
         Tip: use apply_suffix() to build the prefilled messages.
         """
+        if not isinstance(logprobs_num, int) or logprobs_num < 0:
+            raise ValueError("logprobs_num must be a non-negative integer")
         all_input_tokens, semantic_suffix_tokens = self._tokenize(messages)
+        suffix_start = len(all_input_tokens) - len(semantic_suffix_tokens)
 
         if self.mode == "server":
             return self._get_logprobs_server(
                 all_input_tokens,
                 semantic_suffix_tokens,
+                suffix_start,
                 logprobs_num,
             )
         else:
             return self._get_logprobs_offline(
                 all_input_tokens,
                 semantic_suffix_tokens,
+                suffix_start,
                 logprobs_num,
             )
 
@@ -303,34 +322,28 @@ class LogProbsExtractor:
         self,
         all_input_tokens,
         semantic_suffix_tokens,
+        suffix_start,
         logprobs_num,
     ):
-        from openai import OpenAI
-        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
-
-        response = client.completions.create(
-            model=self.model,
-            prompt=all_input_tokens,
-            max_tokens=1,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            extra_body={
-                "prompt_logprobs": logprobs_num,
-                "add_special_tokens": False,
-            }
+        scored = self._backend.score(
+            all_input_tokens,
+            suffix_start,
+            logprobs_num,
+            self.temperature,
+            self.top_p,
         )
-
-        choice = response.choices[0]
         return _extract_suffix_result(
-            text=choice.text,
-            prompt_logprobs=getattr(choice, "prompt_logprobs", None),
+            text=scored.text,
+            suffix_logprobs=scored.positions,
             suffix_token_ids=semantic_suffix_tokens,
+            suffix_start=suffix_start,
         )
 
     def _get_logprobs_offline(
         self,
         all_input_tokens,
         semantic_suffix_tokens,
+        suffix_start,
         logprobs_num,
     ):
         from vllm import SamplingParams
@@ -345,8 +358,13 @@ class LogProbsExtractor:
             sampling_params=sampling_params
         )
         output = outputs[0]
+        prompt_logprobs = output.prompt_logprobs
+        if prompt_logprobs is None:
+            raise ValueError("offline vLLM did not return prompt_logprobs")
+        suffix_logprobs = list(prompt_logprobs)[-len(semantic_suffix_tokens):]
         return _extract_suffix_result(
             text=output.outputs[0].text,
-            prompt_logprobs=output.prompt_logprobs,
+            suffix_logprobs=suffix_logprobs,
             suffix_token_ids=semantic_suffix_tokens,
+            suffix_start=suffix_start,
         )

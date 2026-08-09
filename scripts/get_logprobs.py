@@ -37,6 +37,8 @@ def validate_resume(
     suffix_id: str,
     suffix: str,
     thinking_bypass_prefill: str,
+    server_backend: str,
+    server_version: str | None,
 ) -> None:
     """Ensure an append is a continuation of the same ordered extraction run."""
     if len(existing) > len(inputs):
@@ -75,6 +77,20 @@ def validate_resume(
                 f"Resume extraction settings mismatch at record {index}. "
                 "The suffix or thinking bypass changed; pass --overwrite."
             )
+        existing_backend = output_record.get("server_backend")
+        if existing_backend is None:
+            if server_backend == "sglang":
+                raise ValueError(
+                    "Resume output predates backend tracking and cannot be "
+                    "continued with SGLang; pass --overwrite."
+                )
+        elif (
+            existing_backend != server_backend
+            or output_record.get("server_version") != server_version
+        ):
+            raise ValueError(
+                f"Resume backend mismatch at record {index}; pass --overwrite."
+            )
 
 
 def load_suffix(args: argparse.Namespace) -> str:
@@ -93,6 +109,8 @@ def make_extractor(args: argparse.Namespace) -> LogProbsExtractor:
             api_key=args.api_key,
             temperature=args.temperature,
             top_p=args.top_p,
+            server_backend=args.server_backend,
+            tokenizer_path=args.tokenizer_path,
         )
     if not args.model_dir:
         raise ValueError("Offline mode requires --model-dir")
@@ -108,6 +126,7 @@ def make_extractor(args: argparse.Namespace) -> LogProbsExtractor:
     return LogProbsExtractor(
         thinking_bypass_prefill=args.thinking_bypass_prefill,
         llm=llm,
+        tokenizer_path=args.tokenizer_path,
     )
 
 
@@ -118,8 +137,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--suffix")
     parser.add_argument("--suffix-file", type=Path)
     parser.add_argument("--suffix-id", default="suffix")
-    parser.add_argument("--base-url", help="OpenAI-compatible vLLM URL")
+    parser.add_argument("--base-url", help="vLLM /v1 URL or SGLang server root URL")
+    parser.add_argument(
+        "--server-backend",
+        choices=("vllm", "sglang"),
+        default="vllm",
+        help="Server implementation used by --base-url (default: vllm)",
+    )
     parser.add_argument("--api-key", default="none")
+    parser.add_argument(
+        "--tokenizer-path",
+        help="Local tokenizer path or model ID overriding server discovery",
+    )
     parser.add_argument("--model-dir", help="Local model path for offline vLLM")
     parser.add_argument(
         "--thinking-bypass-prefill",
@@ -143,6 +172,7 @@ def main() -> None:
     records = load_jsonl(args.input)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     extractor = make_extractor(args)
+    extraction_backend = extractor.server_backend or "vllm_offline"
     existing = []
     if not args.overwrite and args.output.exists():
         existing = load_jsonl(args.output)
@@ -152,6 +182,8 @@ def main() -> None:
             suffix_id=args.suffix_id,
             suffix=suffix,
             thinking_bypass_prefill=extractor.thinking_bypass_prefill,
+            server_backend=extraction_backend,
+            server_version=extractor.server_version,
         )
     done = len(existing)
     mode = "w" if args.overwrite else "a"
@@ -178,6 +210,8 @@ def main() -> None:
                 "suffix_id": args.suffix_id,
                 "suffix": suffix,
                 "thinking_bypass_prefill": extractor.thinking_bypass_prefill,
+                "server_backend": extraction_backend,
+                "server_version": extractor.server_version,
                 "suffix_start": result["suffix_start"],
                 "suffix_end": result["suffix_end"],
                 "suffix_token_ids": result["suffix_token_ids"],
