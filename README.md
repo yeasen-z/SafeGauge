@@ -1,7 +1,21 @@
 # SafeGauge
 
-SafeGauge probes LLM safety risks by appending a verbalized assistant suffix as a prefill, extracting the suffix token prefill log-probabilities from the target model, and training a lightweight binary classifier on those features.
+SafeGauge probes LLM safety risks by appending a verbalized assistant gauge suffix as a prefill, extracting the suffix token prefill log-probabilities from the target model, and training a lightweight binary classifier on those features.
 This repository provides the core implementation plus scripts for feature extraction, probe training, and serving.
+
+## Citation
+
+```bibtex
+@misc{zhang2026leakgauge,
+      title={The Model's Tell: Measuring Context-Leakage Attack Signals with Behavior Gauges}, 
+      author={Maosen Zhang and Jianshuo Dong and Boting Lu and Wenyue Li and Xiaoping Zhang and Tianwei Zhang and Jie Zhang and Han Qiu},
+      year={2026},
+      eprint={2608.17829},
+      archivePrefix={arXiv},
+      primaryClass={cs.CR},
+      url={https://arxiv.org/abs/2608.17829}, 
+}
+```
 
 ## Results
 
